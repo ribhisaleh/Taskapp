@@ -11,6 +11,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&family=Syne:wght@700;800&display=swap" rel="stylesheet"/>
 <style>
@@ -27,6 +28,26 @@ select option{background:#0D1B2A;color:#E2E8F0}
 <script type="text/babel">
 const {useState,useEffect,useCallback,useRef}=React;
 
+// ─── Supabase ───────────────────────────────────────────────────────────────
+const SUPABASE_URL="https://vnutvgktszvzpsgtwaha.supabase.co";
+const SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZudXR2Z2t0c3p2enBzZ3R3YWhhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA0MjQ2ODgsImV4cCI6MjA5NjAwMDY4OH0.TygH2zVdpqNPzK4FM0X0qcdzQ56C4XN7Pk4GK03duiY";
+const sb=supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
+
+async function dbLoad(){
+  const{data,error}=await sb.from("tasks").select("*").order("created_at",{ascending:true});
+  if(error){console.error("load error",error);return[];}
+  return data||[];
+}
+async function dbUpsert(task){
+  const{error}=await sb.from("tasks").upsert(task,{onConflict:"id"});
+  if(error)console.error("upsert error",error);
+}
+async function dbDelete(id){
+  const{error}=await sb.from("tasks").delete().eq("id",id);
+  if(error)console.error("delete error",error);
+}
+
+// ─── Constants ──────────────────────────────────────────────────────────────
 const CATEGORIES=[
   {id:"voice",label:"VoiceAutomations.ai",color:"#00D4AA",bg:"#00D4AA15",icon:"🎙️"},
   {id:"kinetic",label:"Kinetic BDR",color:"#FF6B35",bg:"#FF6B3515",icon:"⚡"},
@@ -42,9 +63,7 @@ const PRIORITIES=[
   {id:"low",label:"Low",color:"#6B7280",dot:"⚪"},
 ];
 const TODAY=new Date().toISOString().split("T")[0];
-const STORAGE_KEY="ribz_tasks_v1";
-function loadTasks(){try{return JSON.parse(localStorage.getItem(STORAGE_KEY)||"[]")}catch{return[]}}
-function saveTasks(t){try{localStorage.setItem(STORAGE_KEY,JSON.stringify(t))}catch{}}
+
 function getWeekDates(anchor=new Date()){
   const d=new Date(anchor);
   const monday=new Date(d);
@@ -62,6 +81,14 @@ function buildGCalURL(task){
   return `https://www.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${d}/${d}&details=${details}`;
 }
 
+// ─── Sync Status Badge ───────────────────────────────────────────────────────
+function SyncBadge({status}){
+  const map={loading:{color:"#FBBF24",text:"SYNCING..."},ok:{color:"#34D399",text:"SYNCED"},error:{color:"#EF4444",text:"OFFLINE"}};
+  const s=map[status]||map.ok;
+  return <span style={{fontSize:"8px",color:s.color,letterSpacing:"0.1em",fontFamily:"monospace"}}>● {s.text}</span>;
+}
+
+// ─── Task Card ───────────────────────────────────────────────────────────────
 function TaskCard({task,onToggle,onDelete,onEdit}){
   const cat=CATEGORIES.find(c=>c.id===task.category)||CATEGORIES[6];
   const past=isPast(task.date)&&!task.done;
@@ -101,9 +128,17 @@ function TaskCard({task,onToggle,onDelete,onEdit}){
   );
 }
 
+// ─── Task Modal ──────────────────────────────────────────────────────────────
 function TaskModal({task,defaultDate,onSave,onClose}){
   const [form,setForm]=useState(task||{title:"",category:"voice",priority:"medium",date:defaultDate||TODAY,notes:"",tags:"",done:false});
+  const [saving,setSaving]=useState(false);
   const set=(k,v)=>setForm(f=>({...f,[k]:v}));
+  const handleSave=async()=>{
+    if(!form.title.trim())return;
+    setSaving(true);
+    await onSave({...form,id:form.id||Date.now().toString()});
+    setSaving(false);
+  };
   return(
     <div style={{position:"fixed",inset:0,background:"#000000DD",zIndex:1000,display:"flex",alignItems:"flex-end",justifyContent:"center"}} onClick={e=>e.target===e.currentTarget&&onClose()}>
       <div style={{background:"#0D1B2A",borderRadius:"16px 16px 0 0",border:"1px solid #1E3A5F",borderBottom:"none",width:"100%",maxWidth:"600px",maxHeight:"92vh",overflowY:"auto",padding:"20px 20px calc(20px + env(safe-area-inset-bottom))"}}>
@@ -131,16 +166,18 @@ function TaskModal({task,defaultDate,onSave,onClose}){
         <input value={form.tags} onChange={e=>set("tags",e.target.value)} placeholder="outreach, client, urgent" style={{width:"100%",background:"#070F18",border:"1px solid #1E3A5F",borderRadius:"8px",padding:"12px",color:"#E2E8F0",fontSize:"14px",fontFamily:"inherit",marginBottom:"14px"}}/>
         <label style={{fontSize:"10px",color:"#475569",display:"block",marginBottom:"5px",letterSpacing:"0.1em"}}>NOTES</label>
         <textarea value={form.notes} onChange={e=>set("notes",e.target.value)} rows={3} placeholder="Context, links, details..." style={{width:"100%",background:"#070F18",border:"1px solid #1E3A5F",borderRadius:"8px",padding:"12px",color:"#E2E8F0",fontSize:"14px",fontFamily:"inherit",resize:"none",marginBottom:"20px"}}/>
-        <button onClick={()=>{if(!form.title.trim())return;onSave({...form,id:form.id||Date.now().toString()});}} style={{width:"100%",background:"#00D4AA",color:"#070F18",border:"none",borderRadius:"10px",padding:"15px",fontSize:"14px",fontWeight:"800",cursor:"pointer",fontFamily:"inherit",letterSpacing:"0.08em"}}>
-          {task?.id?"SAVE CHANGES":"CREATE TASK"}
+        <button onClick={handleSave} disabled={saving} style={{width:"100%",background:saving?"#1E3A5F":"#00D4AA",color:"#070F18",border:"none",borderRadius:"10px",padding:"15px",fontSize:"14px",fontWeight:"800",cursor:saving?"not-allowed":"pointer",fontFamily:"inherit",letterSpacing:"0.08em",transition:"background 0.2s"}}>
+          {saving?"SAVING...":task?.id?"SAVE CHANGES":"CREATE TASK"}
         </button>
       </div>
     </div>
   );
 }
 
+// ─── Main App ────────────────────────────────────────────────────────────────
 function App(){
-  const [tasks,setTasks]=useState(()=>loadTasks());
+  const [tasks,setTasks]=useState([]);
+  const [syncStatus,setSyncStatus]=useState("loading");
   const [view,setView]=useState("daily");
   const [modal,setModal]=useState(null);
   const [filterCat,setFilterCat]=useState("all");
@@ -148,7 +185,31 @@ function App(){
   const [selectedDay,setSelectedDay]=useState(TODAY);
   const dayScrollRef=useRef(null);
 
-  useEffect(()=>{saveTasks(tasks)},[tasks]);
+  // Load from Supabase on mount + subscribe to realtime changes
+  useEffect(()=>{
+    setSyncStatus("loading");
+    dbLoad().then(data=>{
+      setTasks(data);
+      setSyncStatus("ok");
+    }).catch(()=>setSyncStatus("error"));
+
+    // Realtime subscription — any device change updates all others instantly
+    const channel=sb.channel("tasks-changes")
+      .on("postgres_changes",{event:"*",schema:"public",table:"tasks"},payload=>{
+        if(payload.eventType==="INSERT"||payload.eventType==="UPDATE"){
+          setTasks(prev=>{
+            const exists=prev.find(t=>t.id===payload.new.id);
+            return exists?prev.map(t=>t.id===payload.new.id?payload.new:t):[...prev,payload.new];
+          });
+        } else if(payload.eventType==="DELETE"){
+          setTasks(prev=>prev.filter(t=>t.id!==payload.old.id));
+        }
+      })
+      .subscribe();
+
+    return()=>sb.removeChannel(channel);
+  },[]);
+
   useEffect(()=>{
     if(dayScrollRef.current){
       const el=dayScrollRef.current.querySelector("[data-today='true']");
@@ -156,12 +217,30 @@ function App(){
     }
   },[view]);
 
-  const upsertTask=useCallback((task)=>{
+  const upsertTask=useCallback(async(task)=>{
+    setSyncStatus("loading");
     setTasks(prev=>prev.find(t=>t.id===task.id)?prev.map(t=>t.id===task.id?task:t):[...prev,task]);
+    await dbUpsert(task);
+    setSyncStatus("ok");
     setModal(null);
   },[]);
-  const deleteTask=useCallback((id)=>setTasks(prev=>prev.filter(t=>t.id!==id)),[]);
-  const toggleTask=useCallback((id)=>setTasks(prev=>prev.map(t=>t.id===id?{...t,done:!t.done}:t)),[]);
+
+  const deleteTask=useCallback(async(id)=>{
+    setSyncStatus("loading");
+    setTasks(prev=>prev.filter(t=>t.id!==id));
+    await dbDelete(id);
+    setSyncStatus("ok");
+  },[]);
+
+  const toggleTask=useCallback(async(id)=>{
+    setSyncStatus("loading");
+    setTasks(prev=>{
+      const updated=prev.map(t=>t.id===id?{...t,done:!t.done}:t);
+      const task=updated.find(t=>t.id===id);
+      dbUpsert(task).then(()=>setSyncStatus("ok"));
+      return updated;
+    });
+  },[]);
 
   const filtered=(list)=>filterCat==="all"?list:list.filter(t=>t.category===filterCat);
   const weekDates=getWeekDates(weekAnchor);
@@ -180,7 +259,10 @@ function App(){
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
           <div>
             <div style={{fontFamily:"'Syne',sans-serif",fontSize:"17px",fontWeight:"800",color:"#00D4AA",letterSpacing:"-0.02em",lineHeight:1}}>RIBZ COMMAND CENTER</div>
-            <div style={{fontSize:"9px",color:"#334155",marginTop:"2px",letterSpacing:"0.1em"}}>{new Date().toLocaleDateString("en-US",{weekday:"long",month:"short",day:"numeric"}).toUpperCase()}</div>
+            <div style={{display:"flex",alignItems:"center",gap:"8px",marginTop:"2px"}}>
+              <span style={{fontSize:"9px",color:"#334155",letterSpacing:"0.1em"}}>{new Date().toLocaleDateString("en-US",{weekday:"long",month:"short",day:"numeric"}).toUpperCase()}</span>
+              <SyncBadge status={syncStatus}/>
+            </div>
           </div>
           <div style={{display:"flex",gap:"12px",alignItems:"center"}}>
             <div style={{textAlign:"center"}}>
@@ -211,7 +293,8 @@ function App(){
       </div>
 
       <div style={{padding:"16px",paddingBottom:"32px"}}>
-        {/* DAILY */}
+
+        {/* ── DAILY ── */}
         {view==="daily"&&(
           <>
             <div ref={dayScrollRef} style={{display:"flex",gap:"6px",overflowX:"auto",marginBottom:"16px",paddingBottom:"4px"}}>
@@ -246,7 +329,12 @@ function App(){
                 <div style={{fontSize:"9px",color:"#334155",marginTop:"4px",textAlign:"right"}}>{todayTasks.filter(t=>t.done).length}/{todayTasks.length} done</div>
               </div>
             )}
-            {todayTasks.length===0?(
+            {syncStatus==="loading"&&tasks.length===0?(
+              <div style={{textAlign:"center",padding:"48px 20px",color:"#1A2940"}}>
+                <div style={{fontSize:"30px",marginBottom:"12px"}}>⏳</div>
+                <div style={{fontSize:"12px",letterSpacing:"0.05em",color:"#FBBF24"}}>LOADING FROM CLOUD...</div>
+              </div>
+            ):todayTasks.length===0?(
               <div style={{textAlign:"center",padding:"48px 20px",color:"#1A2940"}}>
                 <div style={{fontSize:"40px",marginBottom:"12px"}}>📋</div>
                 <div style={{fontSize:"12px",letterSpacing:"0.05em"}}>NO TASKS FOR THIS DAY</div>
@@ -259,7 +347,7 @@ function App(){
           </>
         )}
 
-        {/* WEEKLY */}
+        {/* ── WEEKLY ── */}
         {view==="weekly"&&(
           <>
             <div style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"16px"}}>
@@ -296,7 +384,7 @@ function App(){
           </>
         )}
 
-        {/* BACKLOG */}
+        {/* ── BACKLOG ── */}
         {view==="backlog"&&(
           <>
             <div style={{marginBottom:"16px"}}>
