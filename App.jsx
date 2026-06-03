@@ -1,0 +1,558 @@
+import { useState, useEffect, useCallback, useRef } from "react";
+
+const CATEGORIES = [
+  { id: "voice",    label: "VoiceAutomations.ai", color: "#00D4AA", bg: "#00D4AA15", icon: "🎙️" },
+  { id: "kinetic",  label: "Kinetic BDR",          color: "#FF6B35", bg: "#FF6B3515", icon: "⚡" },
+  { id: "personal", label: "Personal / Family",    color: "#A78BFA", bg: "#A78BFA15", icon: "🏠" },
+  { id: "health",   label: "Health & Fitness",     color: "#34D399", bg: "#34D39915", icon: "💪" },
+  { id: "learning", label: "Learning / Study",     color: "#60A5FA", bg: "#60A5FA15", icon: "📚" },
+  { id: "finance",  label: "Finance / House Goal", color: "#FBBF24", bg: "#FBBF2415", icon: "🏗️" },
+  { id: "other",    label: "Other",                color: "#94A3B8", bg: "#94A3B815", icon: "📌" },
+];
+
+const PRIORITIES = [
+  { id: "high",   label: "High",   color: "#EF4444", dot: "🔴" },
+  { id: "medium", label: "Medium", color: "#F59E0B", dot: "🟡" },
+  { id: "low",    label: "Low",    color: "#6B7280", dot: "⚪" },
+];
+
+const TODAY = new Date().toISOString().split("T")[0];
+const STORAGE_KEY = "ribz_tasks_v1";
+
+function loadTasks() {
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); } catch { return []; }
+}
+function saveTasks(t) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(t)); } catch {}
+}
+
+function getWeekDates(anchor = new Date()) {
+  const d = new Date(anchor);
+  const monday = new Date(d);
+  monday.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  return Array.from({ length: 7 }, (_, i) => {
+    const dd = new Date(monday); dd.setDate(monday.getDate() + i);
+    return dd.toISOString().split("T")[0];
+  });
+}
+
+function formatDateFull(ds) {
+  return new Date(ds + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+}
+function isToday(ds) { return ds === TODAY; }
+function isPast(ds)  { return ds < TODAY; }
+
+function buildGCalURL(task) {
+  const cat = CATEGORIES.find(c => c.id === task.category);
+  const title = encodeURIComponent(`${cat?.icon} ${task.title}`);
+  const details = encodeURIComponent(`Category: ${cat?.label}\nPriority: ${task.priority?.toUpperCase()}\nTags: ${task.tags || ""}\n\n${task.notes || ""}`);
+  const d = task.date.replace(/-/g, "");
+  return `https://www.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${d}/${d}&details=${details}`;
+}
+
+// ─── Install Banner ────────────────────────────────────────────────────────
+function InstallBanner({ onDismiss }) {
+  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  return (
+    <div style={{
+      background: "#0D2137", borderBottom: "1px solid #00D4AA40",
+      padding: "10px 16px", display: "flex", alignItems: "center", gap: "10px",
+    }}>
+      <span style={{ fontSize: "20px" }}>📲</span>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontSize: "11px", fontWeight: "700", color: "#00D4AA", fontFamily: "monospace" }}>INSTALL APP</div>
+        <div style={{ fontSize: "10px", color: "#64748B", fontFamily: "monospace" }}>
+          {isIOS ? 'Tap Share → "Add to Home Screen"' : 'Tap ⋮ menu → "Add to Home Screen"'}
+        </div>
+      </div>
+      <button onClick={onDismiss}
+        style={{ background: "none", border: "none", color: "#475569", fontSize: "18px", cursor: "pointer", padding: "4px 8px" }}>✕</button>
+    </div>
+  );
+}
+
+// ─── Task Card ─────────────────────────────────────────────────────────────
+function TaskCard({ task, onToggle, onDelete, onEdit }) {
+  const cat = CATEGORIES.find(c => c.id === task.category) || CATEGORIES[6];
+  const past = isPast(task.date) && !task.done;
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div style={{
+      background: task.done ? "#0A1525" : cat.bg,
+      border: `1px solid ${task.done ? "#1A2940" : cat.color}35`,
+      borderLeft: `3px solid ${task.done ? "#1E2D3D" : cat.color}`,
+      borderRadius: "10px", marginBottom: "8px",
+      opacity: task.done ? 0.55 : 1,
+      transition: "opacity 0.2s",
+    }}>
+      {/* Main row */}
+      <div style={{ display: "flex", alignItems: "center", gap: "10px", padding: "12px 12px 10px" }}>
+        {/* Checkbox — large tap target */}
+        <button onClick={() => onToggle(task.id)} style={{
+          width: "26px", height: "26px", borderRadius: "6px", flexShrink: 0,
+          background: task.done ? cat.color : "transparent",
+          border: `2px solid ${cat.color}`,
+          cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+          transition: "all 0.15s", WebkitTapHighlightColor: "transparent",
+        }}>
+          {task.done && <span style={{ color: "#070F18", fontSize: "14px", fontWeight: "800" }}>✓</span>}
+        </button>
+
+        {/* Title + badges */}
+        <div style={{ flex: 1, minWidth: 0 }} onClick={() => setExpanded(e => !e)}>
+          <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+            <span style={{
+              fontSize: "13px", fontWeight: "600", color: task.done ? "#3A4A5C" : "#E2E8F0",
+              textDecoration: task.done ? "line-through" : "none",
+              fontFamily: "'IBM Plex Mono', monospace", lineHeight: 1.3,
+            }}>{task.title}</span>
+            {past && <span style={{ fontSize: "9px", background: "#EF444420", color: "#EF4444", padding: "1px 5px", borderRadius: "3px", fontFamily: "monospace", flexShrink: 0 }}>OVERDUE</span>}
+          </div>
+          <div style={{ display: "flex", gap: "5px", marginTop: "5px", flexWrap: "wrap" }}>
+            <span style={{ fontSize: "9px", background: `${cat.color}20`, color: cat.color, padding: "2px 6px", borderRadius: "3px", fontFamily: "monospace" }}>
+              {cat.icon} {cat.label}
+            </span>
+            {task.priority === "high" && <span style={{ fontSize: "9px", background: "#EF444420", color: "#EF4444", padding: "2px 6px", borderRadius: "3px", fontFamily: "monospace" }}>🔴 HIGH</span>}
+            {task.tags && task.tags.split(",").map(t => t.trim()).filter(Boolean).slice(0, 2).map(t => (
+              <span key={t} style={{ fontSize: "9px", background: "#1A2940", color: "#64748B", padding: "2px 5px", borderRadius: "3px", fontFamily: "monospace" }}>#{t}</span>
+            ))}
+          </div>
+        </div>
+
+        {/* Expand chevron */}
+        <button onClick={() => setExpanded(e => !e)}
+          style={{ background: "none", border: "none", color: "#3A4A5C", cursor: "pointer", fontSize: "12px", padding: "4px", WebkitTapHighlightColor: "transparent" }}>
+          {expanded ? "▲" : "▼"}
+        </button>
+      </div>
+
+      {/* Expanded actions */}
+      {expanded && (
+        <div style={{ padding: "0 12px 12px", borderTop: "1px solid #1A2940" }}>
+          {task.notes && (
+            <div style={{ fontSize: "11px", color: "#64748B", fontFamily: "monospace", padding: "8px 0", lineHeight: 1.5 }}>{task.notes}</div>
+          )}
+          <div style={{ display: "flex", gap: "8px", marginTop: "8px" }}>
+            <button onClick={() => window.open(buildGCalURL(task), "_blank")}
+              style={{ flex: 1, background: "#0D2137", border: "1px solid #1E3A5F", borderRadius: "7px", padding: "9px", color: "#60A5FA", cursor: "pointer", fontSize: "11px", fontFamily: "monospace", WebkitTapHighlightColor: "transparent" }}>
+              📅 Add to GCal
+            </button>
+            <button onClick={() => onEdit(task)}
+              style={{ flex: 1, background: "#0D2137", border: "1px solid #1E3A5F", borderRadius: "7px", padding: "9px", color: "#A78BFA", cursor: "pointer", fontSize: "11px", fontFamily: "monospace", WebkitTapHighlightColor: "transparent" }}>
+              ✏️ Edit
+            </button>
+            <button onClick={() => onDelete(task.id)}
+              style={{ background: "#0D2137", border: "1px solid #2A1A1A", borderRadius: "7px", padding: "9px 12px", color: "#EF4444", cursor: "pointer", fontSize: "11px", fontFamily: "monospace", WebkitTapHighlightColor: "transparent" }}>
+              🗑️
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Task Modal ─────────────────────────────────────────────────────────────
+function TaskModal({ task, defaultDate, onSave, onClose }) {
+  const [form, setForm] = useState(task || {
+    title: "", category: "voice", priority: "medium",
+    date: defaultDate || TODAY, notes: "", tags: "", done: false,
+  });
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, background: "#000000DD", zIndex: 1000,
+      display: "flex", alignItems: "flex-end", justifyContent: "center",
+    }} onClick={e => e.target === e.currentTarget && onClose()}>
+      <div style={{
+        background: "#0D1B2A", borderRadius: "16px 16px 0 0",
+        border: "1px solid #1E3A5F", borderBottom: "none",
+        width: "100%", maxWidth: "600px",
+        maxHeight: "92vh", overflowY: "auto",
+        padding: "20px 20px calc(20px + env(safe-area-inset-bottom))",
+        fontFamily: "'IBM Plex Mono', monospace",
+      }}>
+        {/* Handle */}
+        <div style={{ width: "36px", height: "4px", background: "#1E3A5F", borderRadius: "2px", margin: "0 auto 20px" }} />
+
+        <div style={{ fontSize: "14px", fontWeight: "700", color: "#00D4AA", marginBottom: "20px", letterSpacing: "0.05em" }}>
+          {task?.id ? "✏️ EDIT TASK" : "＋ NEW TASK"}
+        </div>
+
+        <label style={{ fontSize: "10px", color: "#475569", display: "block", marginBottom: "5px", letterSpacing: "0.1em" }}>TASK TITLE *</label>
+        <input value={form.title} onChange={e => set("title", e.target.value)}
+          placeholder="What needs to be done?"
+          autoFocus
+          style={{ width: "100%", background: "#070F18", border: "1px solid #1E3A5F", borderRadius: "8px", padding: "12px", color: "#E2E8F0", fontSize: "14px", fontFamily: "inherit", boxSizing: "border-box", marginBottom: "14px" }} />
+
+        <label style={{ fontSize: "10px", color: "#475569", display: "block", marginBottom: "5px", letterSpacing: "0.1em" }}>DATE</label>
+        <input type="date" value={form.date} onChange={e => set("date", e.target.value)}
+          style={{ width: "100%", background: "#070F18", border: "1px solid #1E3A5F", borderRadius: "8px", padding: "12px", color: "#E2E8F0", fontSize: "14px", fontFamily: "inherit", boxSizing: "border-box", marginBottom: "14px" }} />
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginBottom: "14px" }}>
+          <div>
+            <label style={{ fontSize: "10px", color: "#475569", display: "block", marginBottom: "5px", letterSpacing: "0.1em" }}>CATEGORY</label>
+            <select value={form.category} onChange={e => set("category", e.target.value)}
+              style={{ width: "100%", background: "#070F18", border: "1px solid #1E3A5F", borderRadius: "8px", padding: "12px 8px", color: "#E2E8F0", fontSize: "12px", fontFamily: "inherit" }}>
+              {CATEGORIES.map(c => <option key={c.id} value={c.id}>{c.icon} {c.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={{ fontSize: "10px", color: "#475569", display: "block", marginBottom: "5px", letterSpacing: "0.1em" }}>PRIORITY</label>
+            <select value={form.priority} onChange={e => set("priority", e.target.value)}
+              style={{ width: "100%", background: "#070F18", border: "1px solid #1E3A5F", borderRadius: "8px", padding: "12px 8px", color: "#E2E8F0", fontSize: "12px", fontFamily: "inherit" }}>
+              {PRIORITIES.map(p => <option key={p.id} value={p.id}>{p.dot} {p.label}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <label style={{ fontSize: "10px", color: "#475569", display: "block", marginBottom: "5px", letterSpacing: "0.1em" }}>TAGS (comma-separated)</label>
+        <input value={form.tags} onChange={e => set("tags", e.target.value)}
+          placeholder="outreach, client, urgent"
+          style={{ width: "100%", background: "#070F18", border: "1px solid #1E3A5F", borderRadius: "8px", padding: "12px", color: "#E2E8F0", fontSize: "14px", fontFamily: "inherit", boxSizing: "border-box", marginBottom: "14px" }} />
+
+        <label style={{ fontSize: "10px", color: "#475569", display: "block", marginBottom: "5px", letterSpacing: "0.1em" }}>NOTES</label>
+        <textarea value={form.notes} onChange={e => set("notes", e.target.value)}
+          rows={3} placeholder="Context, links, details..."
+          style={{ width: "100%", background: "#070F18", border: "1px solid #1E3A5F", borderRadius: "8px", padding: "12px", color: "#E2E8F0", fontSize: "14px", fontFamily: "inherit", resize: "none", boxSizing: "border-box", marginBottom: "20px" }} />
+
+        <button
+          onClick={() => { if (!form.title.trim()) return; onSave({ ...form, id: form.id || Date.now().toString() }); }}
+          style={{ width: "100%", background: "#00D4AA", color: "#070F18", border: "none", borderRadius: "10px", padding: "15px", fontSize: "14px", fontWeight: "800", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.08em", WebkitTapHighlightColor: "transparent" }}>
+          {task?.id ? "SAVE CHANGES" : "CREATE TASK"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Main App ──────────────────────────────────────────────────────────────
+export default function App() {
+  const [tasks, setTasks] = useState(() => loadTasks());
+  const [view, setView] = useState("daily");
+  const [modal, setModal] = useState(null);
+  const [filterCat, setFilterCat] = useState("all");
+  const [weekAnchor, setWeekAnchor] = useState(new Date());
+  const [selectedDay, setSelectedDay] = useState(TODAY);
+  const [showInstall, setShowInstall] = useState(false);
+  const [deferredPrompt, setDeferredPrompt] = useState(null);
+  const dayScrollRef = useRef(null);
+
+  useEffect(() => { saveTasks(tasks); }, [tasks]);
+
+  // PWA install prompt
+  useEffect(() => {
+    const isInstalled = window.matchMedia("(display-mode: standalone)").matches;
+    if (isInstalled) return;
+    const dismissed = localStorage.getItem("install_dismissed");
+    if (dismissed) return;
+
+    const handler = (e) => { e.preventDefault(); setDeferredPrompt(e); setShowInstall(true); };
+    window.addEventListener("beforeinstallprompt", handler);
+
+    // iOS: show manual hint after 2s
+    const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    const isSafari = /safari/i.test(navigator.userAgent) && !/chrome/i.test(navigator.userAgent);
+    if (isIOS && isSafari) { setTimeout(() => setShowInstall(true), 2000); }
+
+    return () => window.removeEventListener("beforeinstallprompt", handler);
+  }, []);
+
+  // Auto-scroll day strip to today
+  useEffect(() => {
+    if (dayScrollRef.current) {
+      const todayBtn = dayScrollRef.current.querySelector("[data-today='true']");
+      if (todayBtn) todayBtn.scrollIntoView({ inline: "center", behavior: "smooth" });
+    }
+  }, [view]);
+
+  const upsertTask = useCallback((task) => {
+    setTasks(prev => prev.find(t => t.id === task.id) ? prev.map(t => t.id === task.id ? task : t) : [...prev, task]);
+    setModal(null);
+  }, []);
+  const deleteTask = useCallback((id) => setTasks(prev => prev.filter(t => t.id !== id)), []);
+  const toggleTask = useCallback((id) => setTasks(prev => prev.map(t => t.id === id ? { ...t, done: !t.done } : t)), []);
+
+  const filtered = (list) => filterCat === "all" ? list : list.filter(t => t.category === filterCat);
+  const weekDates = getWeekDates(weekAnchor);
+  const incomplete = tasks.filter(t => !t.done && isPast(t.date));
+  const todayTasks = filtered(tasks.filter(t => t.date === selectedDay));
+
+  const totalToday = tasks.filter(t => t.date === TODAY).length;
+  const doneToday  = tasks.filter(t => t.date === TODAY && t.done).length;
+  const totalAll   = tasks.length;
+  const doneAll    = tasks.filter(t => t.done).length;
+
+  const pct = totalAll > 0 ? Math.round((doneAll / totalAll) * 100) : 0;
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#070F18", color: "#E2E8F0", paddingBottom: "env(safe-area-inset-bottom)" }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Syne:wght@700;800&display=swap');
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        body { margin: 0; overscroll-behavior: none; }
+        input, select, textarea { outline: none; -webkit-appearance: none; }
+        input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.5) brightness(1.5); }
+        select option { background: #0D1B2A; color: #E2E8F0; }
+        ::-webkit-scrollbar { display: none; }
+      `}</style>
+
+      {/* Install Banner */}
+      {showInstall && (
+        <InstallBanner onDismiss={() => { setShowInstall(false); localStorage.setItem("install_dismissed", "1"); }} />
+      )}
+
+      {/* Header */}
+      <div style={{
+        background: "#0A1628",
+        borderBottom: "1px solid #1E3A5F",
+        padding: "12px 16px",
+        paddingTop: "calc(12px + env(safe-area-inset-top))",
+        position: "sticky", top: 0, zIndex: 100,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div>
+            <div style={{ fontFamily: "'Syne', sans-serif", fontSize: "17px", fontWeight: "800", color: "#00D4AA", letterSpacing: "-0.02em", lineHeight: 1 }}>
+              RIBZ COMMAND CENTER
+            </div>
+            <div style={{ fontSize: "9px", color: "#334155", marginTop: "2px", fontFamily: "monospace", letterSpacing: "0.1em" }}>
+              {new Date().toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" }).toUpperCase()}
+            </div>
+          </div>
+
+          {/* Stats row */}
+          <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+            <div style={{ textAlign: "center" }}>
+              <div style={{ fontSize: "16px", fontWeight: "700", color: "#00D4AA", fontFamily: "monospace" }}>{doneToday}/{totalToday}</div>
+              <div style={{ fontSize: "8px", color: "#334155", letterSpacing: "0.1em" }}>TODAY</div>
+            </div>
+            <div style={{ textAlign: "center" }}>
+              <div style={{ fontSize: "16px", fontWeight: "700", color: incomplete.length > 0 ? "#EF4444" : "#34D399", fontFamily: "monospace" }}>{incomplete.length}</div>
+              <div style={{ fontSize: "8px", color: "#334155", letterSpacing: "0.1em" }}>OVERDUE</div>
+            </div>
+            <button onClick={() => setModal({ _new: true })}
+              style={{ background: "#00D4AA", color: "#070F18", border: "none", borderRadius: "8px", padding: "9px 14px", fontSize: "18px", fontWeight: "800", cursor: "pointer", lineHeight: 1 }}>
+              +
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Tab Nav */}
+      <div style={{ background: "#0A1628", borderBottom: "1px solid #1E3A5F", display: "flex", overflowX: "auto" }}>
+        {[
+          ["daily",   "📅 DAILY"],
+          ["weekly",  "🗓️ WEEKLY"],
+          ["backlog", `⚠️ BACKLOG${incomplete.length > 0 ? ` (${incomplete.length})` : ""}`],
+        ].map(([id, label]) => (
+          <button key={id} onClick={() => setView(id)}
+            style={{
+              background: "none", border: "none",
+              borderBottom: `2px solid ${view === id ? "#00D4AA" : "transparent"}`,
+              color: view === id ? "#00D4AA" : "#475569",
+              padding: "11px 16px", cursor: "pointer",
+              fontSize: "10px", fontWeight: "700", fontFamily: "monospace", letterSpacing: "0.08em",
+              whiteSpace: "nowrap", flexShrink: 0,
+            }}>{label}</button>
+        ))}
+      </div>
+
+      {/* Category Filter */}
+      <div style={{ background: "#080F1A", borderBottom: "1px solid #0F1E30", padding: "8px 12px", display: "flex", gap: "6px", overflowX: "auto" }}>
+        {[{ id: "all", icon: "ALL", color: "#475569" }, ...CATEGORIES].map(c => (
+          <button key={c.id} onClick={() => setFilterCat(filterCat === c.id ? "all" : c.id)}
+            style={{
+              flexShrink: 0,
+              background: filterCat === c.id ? `${c.color}20` : "none",
+              border: `1px solid ${filterCat === c.id ? c.color : "#1A2940"}`,
+              color: filterCat === c.id ? c.color : "#334155",
+              borderRadius: "5px", padding: "4px 8px",
+              fontSize: "10px", cursor: "pointer", fontFamily: "monospace",
+            }}>{c.icon}</button>
+        ))}
+      </div>
+
+      {/* Views */}
+      <div style={{ padding: "16px", paddingBottom: "32px" }}>
+
+        {/* ── DAILY ── */}
+        {view === "daily" && (
+          <>
+            {/* Day strip */}
+            <div ref={dayScrollRef} style={{ display: "flex", gap: "6px", overflowX: "auto", marginBottom: "16px", paddingBottom: "4px" }}>
+              {Array.from({ length: 14 }, (_, i) => {
+                const d = new Date(); d.setDate(d.getDate() + i - 3);
+                const ds = d.toISOString().split("T")[0];
+                const count = tasks.filter(t => t.date === ds).length;
+                const done  = tasks.filter(t => t.date === ds && t.done).length;
+                const sel   = ds === selectedDay;
+                const tod   = isToday(ds);
+                return (
+                  <button key={ds} data-today={tod ? "true" : undefined} onClick={() => setSelectedDay(ds)}
+                    style={{
+                      flexShrink: 0, minWidth: "52px",
+                      background: sel ? "#00D4AA" : "#0D1B2A",
+                      border: `1px solid ${sel ? "#00D4AA" : tod ? "#00D4AA40" : "#1A2940"}`,
+                      borderRadius: "8px", padding: "8px 6px", cursor: "pointer", textAlign: "center",
+                    }}>
+                    <div style={{ fontSize: "8px", color: sel ? "#070F18" : "#334155", letterSpacing: "0.1em", fontFamily: "monospace" }}>
+                      {d.toLocaleDateString("en-US", { weekday: "short" }).toUpperCase()}
+                    </div>
+                    <div style={{ fontSize: "18px", fontWeight: "700", color: sel ? "#070F18" : tod ? "#00D4AA" : "#CBD5E1", fontFamily: "monospace" }}>
+                      {d.getDate()}
+                    </div>
+                    {count > 0 && <div style={{ fontSize: "8px", color: sel ? "#070F18" : "#475569", fontFamily: "monospace" }}>{done}/{count}</div>}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Selected day header */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>
+              <div>
+                <div style={{ fontSize: "12px", color: "#64748B", fontFamily: "monospace" }}>{formatDateFull(selectedDay)}</div>
+                {isToday(selectedDay) && <span style={{ fontSize: "9px", background: "#00D4AA20", color: "#00D4AA", padding: "2px 6px", borderRadius: "3px", fontFamily: "monospace" }}>TODAY</span>}
+              </div>
+              <button onClick={() => setModal({ _new: true, date: selectedDay })}
+                style={{ background: "#0D1B2A", border: "1px solid #1E3A5F", color: "#00D4AA", borderRadius: "7px", padding: "7px 12px", cursor: "pointer", fontSize: "11px", fontFamily: "monospace" }}>
+                + ADD
+              </button>
+            </div>
+
+            {/* Progress */}
+            {todayTasks.length > 0 && (
+              <div style={{ marginBottom: "14px" }}>
+                <div style={{ height: "3px", background: "#1A2940", borderRadius: "2px", overflow: "hidden" }}>
+                  <div style={{
+                    height: "100%", background: "#00D4AA", borderRadius: "2px",
+                    width: `${(todayTasks.filter(t => t.done).length / todayTasks.length) * 100}%`,
+                    transition: "width 0.3s",
+                  }} />
+                </div>
+                <div style={{ fontSize: "9px", color: "#334155", marginTop: "4px", fontFamily: "monospace", textAlign: "right" }}>
+                  {todayTasks.filter(t=>t.done).length}/{todayTasks.length} done
+                </div>
+              </div>
+            )}
+
+            {todayTasks.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "48px 20px", color: "#1A2940" }}>
+                <div style={{ fontSize: "40px", marginBottom: "12px" }}>📋</div>
+                <div style={{ fontSize: "12px", fontFamily: "monospace", letterSpacing: "0.05em" }}>NO TASKS FOR THIS DAY</div>
+              </div>
+            ) : (
+              ["high", "medium", "low"].flatMap(p => todayTasks.filter(t => t.priority === p)).map(t =>
+                <TaskCard key={t.id} task={t} onToggle={toggleTask} onDelete={deleteTask} onEdit={setModal} />
+              )
+            )}
+          </>
+        )}
+
+        {/* ── WEEKLY ── */}
+        {view === "weekly" && (
+          <>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "16px" }}>
+              <button onClick={() => { const d = new Date(weekAnchor); d.setDate(d.getDate() - 7); setWeekAnchor(d); }}
+                style={{ background: "#0D1B2A", border: "1px solid #1A2940", color: "#94A3B8", borderRadius: "7px", padding: "8px 12px", cursor: "pointer", fontFamily: "monospace", fontSize: "12px" }}>←</button>
+              <button onClick={() => setWeekAnchor(new Date())}
+                style={{ flex: 1, background: "#0D2137", border: "1px solid #1E3A5F", color: "#00D4AA", borderRadius: "7px", padding: "8px", cursor: "pointer", fontFamily: "monospace", fontSize: "10px", letterSpacing: "0.08em" }}>THIS WEEK</button>
+              <button onClick={() => { const d = new Date(weekAnchor); d.setDate(d.getDate() + 7); setWeekAnchor(d); }}
+                style={{ background: "#0D1B2A", border: "1px solid #1A2940", color: "#94A3B8", borderRadius: "7px", padding: "8px 12px", cursor: "pointer", fontFamily: "monospace", fontSize: "12px" }}>→</button>
+            </div>
+
+            {weekDates.map(date => {
+              const dayTasks = filtered(tasks.filter(t => t.date === date));
+              const done = dayTasks.filter(t => t.done).length;
+              const isT = isToday(date);
+              return (
+                <div key={date} style={{ marginBottom: "12px" }}>
+                  {/* Day header */}
+                  <div style={{
+                    display: "flex", alignItems: "center", justifyContent: "space-between",
+                    padding: "8px 12px",
+                    background: isT ? "#0D2137" : "#0A1525",
+                    border: `1px solid ${isT ? "#00D4AA40" : "#1A2940"}`,
+                    borderRadius: "8px 8px 0 0",
+                  }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <span style={{ fontSize: "14px", fontWeight: "700", color: isT ? "#00D4AA" : "#64748B", fontFamily: "monospace" }}>
+                        {new Date(date + "T00:00:00").toLocaleDateString("en-US", { weekday: "short", day: "numeric" })}
+                      </span>
+                      {isT && <span style={{ fontSize: "9px", background: "#00D4AA20", color: "#00D4AA", padding: "1px 5px", borderRadius: "3px", fontFamily: "monospace" }}>TODAY</span>}
+                    </div>
+                    <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                      {dayTasks.length > 0 && <span style={{ fontSize: "10px", color: "#475569", fontFamily: "monospace" }}>{done}/{dayTasks.length}</span>}
+                      <button onClick={() => { setModal({ _new: true, date }); }}
+                        style={{ background: "none", border: "1px solid #1A2940", color: "#475569", borderRadius: "5px", padding: "3px 8px", cursor: "pointer", fontFamily: "monospace", fontSize: "12px" }}>+</button>
+                    </div>
+                  </div>
+
+                  {dayTasks.length > 0 && (
+                    <div style={{ background: "#080F1A", border: "1px solid #0F1E30", borderTop: "none", borderRadius: "0 0 8px 8px", padding: "8px" }}>
+                      {["high", "medium", "low"].flatMap(p => dayTasks.filter(t => t.priority === p)).map(t =>
+                        <TaskCard key={t.id} task={t} onToggle={toggleTask} onDelete={deleteTask} onEdit={setModal} />
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </>
+        )}
+
+        {/* ── BACKLOG ── */}
+        {view === "backlog" && (
+          <>
+            <div style={{ marginBottom: "16px" }}>
+              <div style={{ fontSize: "12px", color: "#EF4444", fontFamily: "monospace", letterSpacing: "0.05em", marginBottom: "3px" }}>⚠️ INCOMPLETE & OVERDUE</div>
+              <div style={{ fontSize: "10px", color: "#334155", fontFamily: "monospace" }}>Mark done or reschedule. These won't disappear until you act on them.</div>
+            </div>
+
+            {/* Global progress */}
+            {totalAll > 0 && (
+              <div style={{ background: "#0D1B2A", border: "1px solid #1A2940", borderRadius: "8px", padding: "12px 14px", marginBottom: "16px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                  <span style={{ fontSize: "10px", color: "#475569", fontFamily: "monospace", letterSpacing: "0.08em" }}>OVERALL COMPLETION</span>
+                  <span style={{ fontSize: "10px", color: "#00D4AA", fontFamily: "monospace" }}>{doneAll}/{totalAll} — {pct}%</span>
+                </div>
+                <div style={{ height: "4px", background: "#1A2940", borderRadius: "2px", overflow: "hidden" }}>
+                  <div style={{ height: "100%", background: `hsl(${pct * 1.2}, 80%, 50%)`, width: `${pct}%`, transition: "width 0.5s", borderRadius: "2px" }} />
+                </div>
+              </div>
+            )}
+
+            {filtered(incomplete).length === 0 ? (
+              <div style={{ textAlign: "center", padding: "48px 20px", color: "#1A2940" }}>
+                <div style={{ fontSize: "40px", marginBottom: "12px" }}>✅</div>
+                <div style={{ fontSize: "12px", fontFamily: "monospace" }}>BACKLOG CLEAR — CLEAN SLATE</div>
+              </div>
+            ) : (
+              filtered(incomplete)
+                .sort((a, b) => PRIORITIES.findIndex(p=>p.id===a.priority) - PRIORITIES.findIndex(p=>p.id===b.priority) || a.date.localeCompare(b.date))
+                .map(t => (
+                  <div key={t.id}>
+                    <div style={{ fontSize: "9px", color: "#334155", marginBottom: "4px", fontFamily: "monospace", letterSpacing: "0.05em" }}>
+                      {formatDateFull(t.date)}
+                    </div>
+                    <TaskCard task={t} onToggle={toggleTask} onDelete={deleteTask} onEdit={setModal} />
+                  </div>
+                ))
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Modal */}
+      {modal !== null && (
+        <TaskModal
+          task={modal?.id ? modal : null}
+          defaultDate={modal?.date || selectedDay}
+          onSave={upsertTask}
+          onClose={() => setModal(null)}
+        />
+      )}
+    </div>
+  );
+}
